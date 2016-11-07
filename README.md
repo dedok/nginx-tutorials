@@ -50,6 +50,7 @@ sometimes a module will receive several buffers so that it has an incomplete buf
    - send the header, and send the body.
   A handler has one argument, the request struct.
   A request struct has a lot of useful information about the client request, such as the request method, URI, and headers.
+  
 ## See also
 ------------
 The links to the examples implementation of nginx upstream:
