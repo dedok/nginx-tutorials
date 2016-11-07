@@ -2,7 +2,7 @@
 
 # The tutorials of creating modules of nginx.
 
-About Tarantool: https://nginx.org
+About nginx: https://nginx.org
 
 ## Content
 ----------
@@ -50,3 +50,14 @@ sometimes a module will receive several buffers so that it has an incomplete buf
    - send the header, and send the body.
   A handler has one argument, the request struct.
   A request struct has a lot of useful information about the client request, such as the request method, URI, and headers.
+## See also
+------------
+The links to the examples implementation of nginx upstream:
+https://github.com/tarantool/nginx_upstream_module
+https://github.com/openresty/redis2-nginx-module
+
+An old but the good an article about nginx anatomy:
+http://www.evanmiller.org/nginx-modules-guide.html#filters-body
+
+NginX wiki:
+https://www.nginx.com/resources/wiki/
