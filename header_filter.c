@@ -171,8 +171,10 @@ ngx_header_get(ngx_http_request_t *r, const ngx_str_t *header_name,
         if (ngx_strncmp(h[i].key.data, header_name->data, header_name->len)
                 == 0)
         {
-            k = &h[i].key;
-            v = &h[i].value;
+            k->data = h[i].key.data;
+            k->len = h[i].key.len;
+            v->data = h[i].value.data;
+            v->len = h[i].value.len;
             break;
         }
     }
