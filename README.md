@@ -50,7 +50,19 @@ sometimes a module will receive several buffers so that it has an incomplete buf
    - send the header, and send the body.
   A handler has one argument, the request struct.
   A request struct has a lot of useful information about the client request, such as the request method, URI, and headers.
-  
+
+### NJS
+
+#### NJS module example
+  - Get NGINX NJS
+  - Run NGINX with conf/njs_nginx.conf configuration
+#### NJS and add_header example
+  - Get NJS sources
+  - Patch original add_header sources and complie patched NGINX
+  - Run compiled NGINX with conf/njs_add_header.conf configuration
+
+Feel free to ask, if you have any issues.
+
 ## See also
 ------------
 The links to the examples implementation of nginx upstream:
