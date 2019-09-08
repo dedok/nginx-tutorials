@@ -1,0 +1,483 @@
+diff --git a/src/http/modules/ngx_http_headers_filter_module.c b/src/http/modules/ngx_http_headers_filter_module.c
+index a4c8cc26..d99558c6 100644
+--- a/src/http/modules/ngx_http_headers_filter_module.c
++++ b/src/http/modules/ngx_http_headers_filter_module.c
+@@ -9,6 +9,30 @@
+ #include <ngx_core.h>
+ #include <ngx_http.h>
+ 
++#include <njs.h>
++
++/*** Added as example to show embedded NJS {{{ */
++/** Copy from NJS module sources {{{ */
++typedef struct {
++    njs_vm_t            *vm;
++    ngx_array_t         *paths;
++    const njs_extern_t  *req_proto;
++} ngx_http_js_main_conf_t;
++
++typedef struct {
++    njs_vm_t            *vm;
++    ngx_log_t           *log;
++    njs_opaque_value_t   request;
++} ngx_http_js_ctx_t;
++
++static void *ngx_http_js_create_main_conf(ngx_conf_t *cf);
++static char *ngx_http_js_include(ngx_conf_t *cf, ngx_command_t *cmd,
++        void *conf);
++static void ngx_http_js_cleanup_vm(void *data);
++/** }}} */
++
++static ngx_int_t ngx_http_js_ex_call(ngx_http_request_t *r, ngx_str_t *fname);
++/** }}} */
+ 
+ typedef struct ngx_http_header_val_s  ngx_http_header_val_t;
+ 
+@@ -29,6 +53,9 @@ struct ngx_http_header_val_s {
+     ngx_http_set_header_pt     handler;
+     ngx_uint_t                 offset;
+     ngx_uint_t                 always;  /* unsigned  always:1 */
++    /** Added as example of embedded NJS {{{ */
++    ngx_str_t                  js_fname;
++    /** }} */
+ };
+ 
+ 
+@@ -74,7 +101,6 @@ static char *ngx_http_headers_expires(ngx_conf_t *cf, ngx_command_t *cmd,
+ static char *ngx_http_headers_add(ngx_conf_t *cf, ngx_command_t *cmd,
+     void *conf);
+ 
+-
+ static ngx_http_set_header_t  ngx_http_set_headers[] = {
+ 
+     { ngx_string("Cache-Control"),
+@@ -99,6 +125,15 @@ static ngx_http_set_header_t  ngx_http_set_headers[] = {
+ 
+ static ngx_command_t  ngx_http_headers_filter_commands[] = {
+ 
++    /** Added as example of embedded NJS {{{ */
++    { ngx_string("js_ex_include"),
++      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
++      ngx_http_js_include,
++      NGX_HTTP_MAIN_CONF_OFFSET,
++      0,
++      NULL },
++    /** }}} */
++
+     { ngx_string("expires"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                         |NGX_CONF_TAKE12,
+@@ -109,7 +144,7 @@ static ngx_command_t  ngx_http_headers_filter_commands[] = {
+ 
+     { ngx_string("add_header"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+-                        |NGX_CONF_TAKE23,
++                        |(NGX_CONF_TAKE23|NGX_CONF_TAKE4),
+       ngx_http_headers_add,
+       NGX_HTTP_LOC_CONF_OFFSET,
+       offsetof(ngx_http_headers_conf_t, headers),
+@@ -131,7 +166,9 @@ static ngx_http_module_t  ngx_http_headers_filter_module_ctx = {
+     NULL,                                  /* preconfiguration */
+     ngx_http_headers_filter_init,          /* postconfiguration */
+ 
+-    NULL,                                  /* create main configuration */
++    /** Copy from NJS moduke {{{ */
++    ngx_http_js_create_main_conf,          /* create main configuration */
++    /** }}} */
+     NULL,                                  /* init main configuration */
+ 
+     NULL,                                  /* create server configuration */
+@@ -217,6 +254,16 @@ ngx_http_headers_filter(ngx_http_request_t *r)
+                 continue;
+             }
+ 
++            /** Added as example of embedded NJS {{{ */
++            ngx_int_t rc = ngx_http_js_ex_call(r, &h->js_fname);
++            if (rc == NGX_ERROR) {
++                return NGX_ERROR;
++            }
++            else if (rc == NGX_DECLINED) {
++                continue;
++            }
++            /** }}} */
++
+             if (ngx_http_complex_value(r, &h[i].value, &value) != NGX_OK) {
+                 return NGX_ERROR;
+             }
+@@ -863,5 +910,376 @@ ngx_http_headers_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ 
+     hv->always = 1;
+ 
++    /** Added as example of embedded NJS {{{ */
++    if (cf->args->nelts == 4) {
++        return NGX_CONF_OK;
++    }
++
++    hv->js_fname.data = value[4].data;
++    hv->js_fname.len = value[4].len;
++    /** }}} */
++
+     return NGX_CONF_OK;
+ }
++
++/** Added as example of embedded NJS {{{ */
++static njs_int_t
++ngx_http_js_ext_get_status(njs_vm_t *vm, njs_value_t *value, void *obj,
++    uintptr_t data)
++{
++    ngx_http_request_t  *r;
++
++    r = (ngx_http_request_t *) obj;
++
++    njs_value_number_set(value, r->headers_out.status);
++
++    return NJS_OK;
++}
++
++static njs_external_t  ngx_http_js_ext_request[] = {
++
++    { njs_str("status"),
++      NJS_EXTERN_PROPERTY,
++      NULL,
++      0,
++      ngx_http_js_ext_get_status,
++      NULL,
++      NULL,
++      NULL,
++      NULL,
++      NULL,
++      offsetof(ngx_http_request_t, headers_out.status) },
++    };
++
++static njs_external_t  ngx_http_js_externals[] = {
++
++    { njs_str("request"),
++      NJS_EXTERN_OBJECT,
++      ngx_http_js_ext_request,
++      njs_nitems(ngx_http_js_ext_request),
++      NULL,
++      NULL,
++      NULL,
++      NULL,
++      NULL,
++      NULL,
++      0 },
++};
++
++static char *
++ngx_http_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
++{
++    ngx_http_js_main_conf_t *jmcf = conf;
++
++    size_t                 size;
++    u_char                *start, *end;
++    ssize_t                n;
++    ngx_fd_t               fd;
++    ngx_str_t             *m, *value, file;
++    njs_int_t              rc;
++    njs_str_t              text, path;
++    ngx_uint_t             i;
++    njs_vm_opt_t           options;
++    ngx_file_info_t        fi;
++    ngx_pool_cleanup_t    *cln;
++
++    if (jmcf->vm) {
++        return "is duplicate";
++    }
++
++    value = cf->args->elts;
++    file = value[1];
++
++    if (ngx_conf_full_name(cf->cycle, &file, 1) != NGX_OK) {
++        return NGX_CONF_ERROR;
++    }
++
++    fd = ngx_open_file(file.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
++    if (fd == NGX_INVALID_FILE) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
++                           ngx_open_file_n " \"%s\" failed", file.data);
++        return NGX_CONF_ERROR;
++    }
++
++    if (ngx_fd_info(fd, &fi) == NGX_FILE_ERROR) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
++                           ngx_fd_info_n " \"%s\" failed", file.data);
++        (void) ngx_close_file(fd);
++        return NGX_CONF_ERROR;
++    }
++
++    size = ngx_file_size(&fi);
++
++    start = ngx_pnalloc(cf->pool, size);
++    if (start == NULL) {
++        (void) ngx_close_file(fd);
++        return NGX_CONF_ERROR;
++    }
++
++    n = ngx_read_fd(fd, start,  size);
++
++    if (n == -1) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
++                           ngx_read_fd_n " \"%s\" failed", file.data);
++
++        (void) ngx_close_file(fd);
++        return NGX_CONF_ERROR;
++    }
++
++    if ((size_t) n != size) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           ngx_read_fd_n " has read only %z of %O from \"%s\"",
++                           n, size, file.data);
++
++        (void) ngx_close_file(fd);
++        return NGX_CONF_ERROR;
++    }
++
++    if (ngx_close_file(fd) == NGX_FILE_ERROR) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
++                           ngx_close_file_n " %s failed", file.data);
++    }
++
++    end = start + size;
++
++    ngx_memzero(&options, sizeof(njs_vm_opt_t));
++
++    options.backtrace = 1;
++    options.ops = NULL;
++    options.argv = ngx_argv;
++    options.argc = ngx_argc;
++
++    file = value[1];
++    options.file.start = file.data;
++    options.file.length = file.len;
++
++    jmcf->vm = njs_vm_create(&options);
++    if (jmcf->vm == NULL) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "failed to create JS VM");
++        return NGX_CONF_ERROR;
++    }
++
++    cln = ngx_pool_cleanup_add(cf->pool, 0);
++    if (cln == NULL) {
++        return NGX_CONF_ERROR;
++    }
++
++    cln->handler = ngx_http_js_cleanup_vm;
++    cln->data = jmcf->vm;
++
++    path.start = ngx_cycle->prefix.data;
++    path.length = ngx_cycle->prefix.len;
++
++    rc = njs_vm_add_path(jmcf->vm, &path);
++    if (rc != NJS_OK) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "failed to add path");
++        return NGX_CONF_ERROR;
++    }
++
++    if (jmcf->paths != NGX_CONF_UNSET_PTR) {
++        m = jmcf->paths->elts;
++
++        for (i = 0; i < jmcf->paths->nelts; i++) {
++            if (ngx_conf_full_name(cf->cycle, &m[i], 0) != NGX_OK) {
++                return NGX_CONF_ERROR;
++            }
++
++            path.start = m[i].data;
++            path.length = m[i].len;
++
++            rc = njs_vm_add_path(jmcf->vm, &path);
++            if (rc != NJS_OK) {
++                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "failed to add path");
++                return NGX_CONF_ERROR;
++            }
++        }
++    }
++
++    jmcf->req_proto = njs_vm_external_prototype(jmcf->vm,
++                                                &ngx_http_js_externals[0]);
++    if (jmcf->req_proto == NULL) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "failed to add request proto");
++        return NGX_CONF_ERROR;
++    }
++
++    rc = njs_vm_compile(jmcf->vm, &start, end);
++
++    if (rc != NJS_OK) {
++        njs_vm_retval_string(jmcf->vm, &text);
++
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "%*s, included",
++                           text.length, text.start);
++        return NGX_CONF_ERROR;
++    }
++
++    if (start != end) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "extra characters in js script: \"%*s\", included",
++                           end - start, start);
++        return NGX_CONF_ERROR;
++    }
++
++    return NGX_CONF_OK;
++}
++
++static void
++ngx_http_js_cleanup_vm(void *data)
++{
++    njs_vm_t *vm = data;
++
++    njs_vm_destroy(vm);
++}
++
++static void
++ngx_http_js_cleanup_ctx(void *data)
++{
++    ngx_http_js_ctx_t *ctx = data;
++
++    if (njs_vm_pending(ctx->vm)) {
++        ngx_log_error(NGX_LOG_ERR, ctx->log, 0, "pending events");
++    }
++
++    njs_vm_destroy(ctx->vm);
++}
++
++
++static ngx_int_t
++ngx_http_header_js_init_vm(ngx_http_request_t *r)
++{
++    njs_int_t                 rc;
++    njs_str_t                 exception;
++    ngx_http_js_ctx_t        *ctx;
++    ngx_pool_cleanup_t       *cln;
++    ngx_http_js_main_conf_t  *jmcf;
++
++    jmcf = ngx_http_get_module_main_conf(r, ngx_http_headers_filter_module);
++    if (jmcf->vm == NULL) {
++        return NGX_DECLINED;
++    }
++
++    ctx = ngx_http_get_module_ctx(r, ngx_http_headers_filter_module);
++
++    if (ctx == NULL) {
++        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_js_ctx_t));
++        if (ctx == NULL) {
++            return NGX_ERROR;
++        }
++
++        ngx_http_set_ctx(r, ctx, ngx_http_headers_filter_module);
++    }
++
++    if (ctx->vm) {
++        return NGX_OK;
++    }
++
++    ctx->vm = njs_vm_clone(jmcf->vm, r);
++    if (ctx->vm == NULL) {
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "can't clone");
++        return NGX_ERROR;
++    }
++
++    cln = ngx_pool_cleanup_add(r->pool, 0);
++    if (cln == NULL) {
++        return NGX_ERROR;
++    }
++
++    ctx->log = r->connection->log;
++
++    cln->handler = ngx_http_js_cleanup_ctx;
++    cln->data = ctx;
++
++    if (njs_vm_start(ctx->vm) == NJS_ERROR) {
++        njs_vm_retval_string(ctx->vm, &exception);
++
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
++                      "js exception: %*s", exception.length, exception.start);
++
++        return NGX_ERROR;
++    }
++
++    rc = njs_vm_external_create(ctx->vm, njs_value_arg(&ctx->request),
++                                jmcf->req_proto, r);
++    if (rc != NJS_OK) {
++        return NGX_ERROR;
++    }
++
++    return NGX_OK;
++}
++
++/** Added as example of embedded NJS {{{ */
++static ngx_int_t
++ngx_http_js_ex_call(ngx_http_request_t *r, ngx_str_t *fname)
++{
++    ngx_int_t           rc;
++    njs_str_t           name, value, exception;
++    njs_function_t     *func;
++    ngx_http_js_ctx_t  *ctx;
++
++    rc = ngx_http_header_js_init_vm(r);
++
++    if (rc == NGX_ERROR) {
++        return NGX_ERROR;
++    }
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
++                   "http js variable call \"%V\"", fname);
++
++    ctx = ngx_http_get_module_ctx(r, ngx_http_headers_filter_module);
++
++    name.start = fname->data;
++    name.length = fname->len;
++
++    func = njs_vm_function(ctx->vm, &name);
++    if (func == NULL) {
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
++                      "js function \"%V\" not found", fname);
++        return NGX_OK;
++    }
++
++    if (njs_vm_call(ctx->vm, func, njs_value_arg(&ctx->request), 1)
++            != NJS_OK)
++    {
++        njs_vm_retval_string(ctx->vm, &exception);
++
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
++                      "js exception: %*s", exception.length, exception.start);
++        return NGX_OK;
++    }
++
++    if (njs_vm_retval_string(ctx->vm, &value) != NJS_OK) {
++        return NGX_ERROR;
++    }
++
++    if (value.length == sizeof("false") - 1 &&
++            ngx_strncmp(value.start, "false", sizeof("false") - 1) == 0)
++    {
++        return NGX_DECLINED;
++    }
++
++    return NGX_OK;
++}
++
++/** Copy from NJS module sources */
++static void *
++ngx_http_js_create_main_conf(ngx_conf_t *cf)
++{
++    ngx_http_js_main_conf_t  *conf;
++
++    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_js_main_conf_t));
++    if (conf == NULL) {
++        return NULL;
++    }
++
++    /*
++     * set by ngx_pcalloc():
++     *
++     *     conf->vm = NULL;
++     *     conf->req_proto = NULL;
++     */
++
++    conf->paths = NGX_CONF_UNSET_PTR;
++
++    return conf;
++}
++/** }}} */
