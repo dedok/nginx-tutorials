@@ -61,8 +61,6 @@ sometimes a module will receive several buffers so that it has an incomplete buf
   - Patch original add_header sources and complie patched NGINX
   - Run compiled NGINX with conf/njs_add_header.conf configuration
 
-Feel free to ask, if you have any issues.
-
 ## See also
 ------------
 The links to the examples implementation of nginx upstream:
@@ -74,3 +72,9 @@ http://www.evanmiller.org/nginx-modules-guide.html#filters-body
 
 NginX wiki:
 https://www.nginx.com/resources/wiki/
+=======
+Tutorials of development the nginx-modules
+
+Developed for a conference HighLoad++ 2016
+
+if you have any questions, then reach me using email mailto: dedok.mad@gmail.com
